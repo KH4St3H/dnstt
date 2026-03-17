@@ -233,21 +233,15 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	return nil
 }
 
-// acceptStreams wraps a KCP session in a Noise channel and an smux.Session,
-// then awaits smux streams. It passes each stream to handleStream.
-func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error {
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewServer(conn, privkey)
-	if err != nil {
-		return err
-	}
-
-	// Put an smux session on top of the encrypted Noise channel.
+// acceptStreams wraps a KCP session in an smux.Session and awaits smux
+// streams. It passes each stream to handleStream.
+func acceptStreams(conn *kcp.UDPSession, upstream string) error {
+	// Put an smux session directly on top of the KCP conn.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Server(rw, smuxConfig)
+	sess, err := smux.Server(conn, smuxConfig)
 	if err != nil {
 		return err
 	}
@@ -277,7 +271,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) error {
+func acceptSessions(ln *kcp.Listener, mtu int, upstream string) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -306,7 +300,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 				log.Printf("end session %08x", conn.GetConv())
 				conn.Close()
 			}()
-			err := acceptStreams(conn, privkey, upstream)
+			err := acceptStreams(conn, upstream)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
@@ -765,10 +759,8 @@ func computeMaxEncodedPayload(limit int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn) error {
+func run(domain dns.Name, upstream string, dnsConn net.PacketConn) error {
 	defer dnsConn.Close()
-
-	log.Printf("pubkey %x", noise.PubkeyFromPrivkey(privkey))
 
 	// We have a variable amount of room in which to encode downstream
 	// packets in each response, because each response must contain the
@@ -796,7 +788,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, privkey, mtu, upstream)
+		err := acceptSessions(ln, mtu, upstream)
 		if err != nil {
 			log.Printf("acceptSessions: %v", err)
 		}
@@ -932,18 +924,9 @@ Example:
 				os.Exit(1)
 			}
 		}
-		if len(privkey) == 0 {
-			log.Println("generating a temporary one-time keypair")
-			log.Println("use the -privkey or -privkey-file option for a persistent server keypair")
-			var err error
-			privkey, err = noise.GeneratePrivkey()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
+		_ = privkey
 
-		err = run(privkey, domain, upstream, dnsConn)
+		err = run(domain, upstream, dnsConn)
 		if err != nil {
 			log.Fatal(err)
 		}

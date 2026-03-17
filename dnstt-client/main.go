@@ -57,7 +57,6 @@ import (
 	"github.com/xtaci/kcp-go/v5"
 	"github.com/xtaci/smux"
 	"www.bamsoftware.com/git/dnstt.git/dns"
-	"www.bamsoftware.com/git/dnstt.git/noise"
 	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
 )
 
@@ -82,16 +81,6 @@ func dnsNameCapacity(domain dns.Name) int {
 	// Base32 expands every 5 bytes to 8.
 	capacity = capacity * 5 / 8
 	return capacity
-}
-
-// readKeyFromFile reads a key from a named file.
-func readKeyFromFile(filename string) ([]byte, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return noise.ReadKey(f)
 }
 
 // sampleUTLSDistribution parses a weighted uTLS Client Hello ID distribution
@@ -162,7 +151,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) error {
+func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) error {
 	defer pconn.Close()
 
 	ln, err := net.ListenTCP("tcp", localAddr)
@@ -175,7 +164,6 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	if mtu < 80 {
 		return fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
 	}
-	log.Printf("effective MTU %d", mtu)
 
 	// Open a KCP conn on the PacketConn.
 	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
@@ -202,18 +190,12 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 		panic(rc)
 	}
 
-	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewClient(conn, pubkey)
-	if err != nil {
-		return err
-	}
-
-	// Start a smux session on the Noise channel.
+	// Start a smux session directly on the KCP conn.
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
 	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536
-	sess, err := smux.Client(rw, smuxConfig)
+	sess, err := smux.Client(conn, smuxConfig)
 	if err != nil {
 		return fmt.Errorf("opening smux session: %v", err)
 	}
@@ -240,18 +222,16 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 func main() {
 	var dohURL string
 	var dotAddr string
-	var pubkeyFilename string
-	var pubkeyString string
 	var udpAddr string
 	var utlsDistribution string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
-  %[1]s [-doh URL|-dot ADDR|-udp ADDR] -pubkey-file PUBKEYFILE DOMAIN LOCALADDR
+  %[1]s [-doh URL|-dot ADDR|-udp ADDR] DOMAIN LOCALADDR
 
 Examples:
-  %[1]s -doh https://resolver.example/dns-query -pubkey-file server.pub t.example.com 127.0.0.1:7000
-  %[1]s -dot resolver.example:853 -pubkey-file server.pub t.example.com 127.0.0.1:7000
+  %[1]s -doh https://resolver.example/dns-query t.example.com 127.0.0.1:7000
+  %[1]s -dot resolver.example:853 t.example.com 127.0.0.1:7000
 
 `, os.Args[0])
 		flag.PrintDefaults()
@@ -279,8 +259,6 @@ Known TLS fingerprints for -utls are:
 	}
 	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
 	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
-	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
-	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
@@ -301,30 +279,6 @@ Known TLS fingerprints for -utls are:
 	localAddr, err := net.ResolveTCPAddr("tcp", flag.Arg(1))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	var pubkey []byte
-	if pubkeyFilename != "" && pubkeyString != "" {
-		fmt.Fprintf(os.Stderr, "only one of -pubkey and -pubkey-file may be used\n")
-		os.Exit(1)
-	} else if pubkeyFilename != "" {
-		var err error
-		pubkey, err = readKeyFromFile(pubkeyFilename)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot read pubkey from file: %v\n", err)
-			os.Exit(1)
-		}
-	} else if pubkeyString != "" {
-		var err error
-		pubkey, err = noise.DecodeKey(pubkeyString)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pubkey format error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if len(pubkey) == 0 {
-		fmt.Fprintf(os.Stderr, "the -pubkey or -pubkey-file option is required\n")
 		os.Exit(1)
 	}
 
@@ -408,7 +362,7 @@ Known TLS fingerprints for -utls are:
 	}
 
 	pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
-	err = run(pubkey, domain, localAddr, remoteAddr, pconn)
+	err = run(domain, localAddr, remoteAddr, pconn)
 	if err != nil {
 		log.Fatal(err)
 	}
