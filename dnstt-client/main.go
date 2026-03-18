@@ -151,7 +151,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) error {
+func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, mtu int, pconn net.PacketConn) error {
 	defer pconn.Close()
 
 	ln, err := net.ListenTCP("tcp", localAddr)
@@ -160,9 +160,16 @@ func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net
 	}
 	defer ln.Close()
 
-	mtu := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1 // clientid + padding length prefix + padding + data length prefix
-	if mtu < 80 {
-		return fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
+	mtuCap := dnsNameCapacity(domain) - 8 - 1 - numPadding - 1 // clientid + padding length prefix + padding + data length prefix
+	if mtu == 0 {
+		mtu = mtuCap
+	}
+	if mtu > mtuCap {
+		return fmt.Errorf("provided mtu value \"%d\" is higher than the capacity of you domain \"%d\"", mtu, mtuCap)
+	}
+
+	if mtu < 50 {
+		return fmt.Errorf("minimum allowed mtu is 50")
 	}
 
 	// Open a KCP conn on the PacketConn.
@@ -223,6 +230,7 @@ func main() {
 	var dohURL string
 	var dotAddr string
 	var udpAddr string
+	var mtu int
 	var utlsDistribution string
 
 	flag.Usage = func() {
@@ -260,6 +268,7 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
 	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
 	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
+	flag.IntVar(&mtu, "mtu", 50, "custom value for mtu (default=50)")
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
@@ -362,7 +371,7 @@ Known TLS fingerprints for -utls are:
 	}
 
 	pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
-	err = run(domain, localAddr, remoteAddr, pconn)
+	err = run(domain, localAddr, remoteAddr, mtu, pconn)
 	if err != nil {
 		log.Fatal(err)
 	}
