@@ -40,7 +40,7 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
+	"encoding/base32"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -98,8 +98,8 @@ var (
 	maxUDPPayload = 1280 - 40 - 8
 )
 
-// base64Encoding is a base64url encoding without padding.
-var base64Encoding = base64.RawURLEncoding
+// base32Encoding is a base32 encoding without padding.
+var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // generateKeypair generates a private key and the corresponding public key. If
 // privkeyFilename and pubkeyFilename are respectively empty, it prints the
@@ -451,13 +451,13 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	encoded := bytes.Join(prefix, nil)
-	payload := make([]byte, base64Encoding.DecodedLen(len(encoded)))
-	n, err := base64Encoding.Decode(payload, encoded)
+	encoded := bytes.ToUpper(bytes.Join(prefix, nil))
+	payload := make([]byte, base32Encoding.DecodedLen(len(encoded)))
+	n, err := base32Encoding.Decode(payload, encoded)
 	if err != nil {
-		// Base64 error, make like the name doesn't exist.
+		// Base32 error, make like the name doesn't exist.
 		resp.Flags |= dns.RcodeNameError
-		log.Printf("NXDOMAIN: base64 decoding: %v", err)
+		log.Printf("NXDOMAIN: base32 decoding: %v", err)
 		return resp, nil
 	}
 	payload = payload[:n]
@@ -680,7 +680,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 // This function needs to be kept in sync with sendLoop with regard to how it
 // builds candidate responses.
 func computeMaxEncodedPayload(limit int) int {
-	// 64+64+64+62 octets, needs to be base64-decodable.
+	// 64+64+64+62 octets, needs to be base32-decodable.
 	maxLengthName, err := dns.NewName([][]byte{
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),

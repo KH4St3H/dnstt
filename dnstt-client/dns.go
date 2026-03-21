@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/base32"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -39,8 +39,8 @@ const (
 	pollLimit = 16
 )
 
-// base64Encoding is a base64url encoding without padding.
-var base64Encoding = base64.RawURLEncoding
+// base32Encoding is a base32 encoding without padding.
+var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
@@ -268,9 +268,9 @@ func chunks(p []byte, n int) [][]byte {
 //
 //     CLIENTID\xe3\xd9\xa3\x15\x22supercalifragilisticexpialidocious
 //
-//  3. Base64url-encode, without padding.
+//  3. Base32-encode, without padding and in lower case.
 //
-//     Q0xJRU5USUQ...
+//     ingesrkokreujy6zumkse43vobsxey3bnruwm4tbm5uwy2ltoruwgzlyobuwc3djmrxwg2lpovzq
 //
 //  4. Break into labels of at most 63 octets.
 //
@@ -303,8 +303,9 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		decoded = buf.Bytes()
 	}
 
-	encoded := make([]byte, base64Encoding.EncodedLen(len(decoded)))
-	base64Encoding.Encode(encoded, decoded)
+	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
+	base32Encoding.Encode(encoded, decoded)
+	encoded = bytes.ToLower(encoded)
 	labels := chunks(encoded, 63)
 	labels = append(labels, c.domain...)
 	name, err := dns.NewName(labels)
