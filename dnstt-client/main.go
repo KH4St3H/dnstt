@@ -78,8 +78,8 @@ func dnsNameCapacity(domain dns.Name) int {
 	// Each label may be up to 63 bytes long and requires 64 bytes to
 	// encode.
 	capacity = capacity * 63 / 64
-	// Base32 expands every 5 bytes to 8.
-	capacity = capacity * 5 / 8
+	// Base64 expands every 3 bytes to 4.
+	capacity = capacity * 3 / 4
 	return capacity
 }
 

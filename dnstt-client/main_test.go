@@ -17,7 +17,7 @@ func TestDNSNameCapacity(t *testing.T) {
 		if capacity <= 0 {
 			continue
 		}
-		prefix := []byte(base32Encoding.EncodeToString(bytes.Repeat([]byte{'y'}, capacity)))
+		prefix := []byte(base64Encoding.EncodeToString(bytes.Repeat([]byte{'y'}, capacity)))
 		labels := append(chunks(prefix, 63), domain...)
 		_, err = dns.NewName(labels)
 		if err != nil {
