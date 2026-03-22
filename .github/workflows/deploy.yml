@@ -26,6 +26,17 @@ jobs:
         run: |
           go build -trimpath -ldflags="-s -w" -o dnstt-server ./dnstt-server/
 
+      - name: Stop service and backup binary
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            systemctl stop dnstt-server || true
+            cp -f /usr/local/bin/dnstt-server /usr/local/bin/dnstt-server.bak 2>/dev/null || true
+            rm -f /usr/local/bin/dnstt-server
+
       - name: Copy binaries to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -36,7 +47,7 @@ jobs:
           target: /usr/local/bin/
           strip_components: 1
 
-      - name: Restart service
+      - name: Start service
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -44,4 +55,11 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             chmod +x /usr/local/bin/dnstt-server
-            systemctl restart dnstt-server
+            systemctl start dnstt-server
+            if ! systemctl is-active --quiet dnstt-server; then
+              echo "New binary failed, rolling back..."
+              mv /usr/local/bin/dnstt-server.bak /usr/local/bin/dnstt-server
+              systemctl start dnstt-server
+              exit 1
+            fi
+            rm -f /usr/local/bin/dnstt-server.bak
