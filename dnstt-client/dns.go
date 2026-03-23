@@ -17,7 +17,7 @@ import (
 
 const (
 	// How many bytes of random padding to insert into queries.
-	numPadding = 3
+	numPadding = 0
 	// In an otherwise empty polling query, insert even more random padding,
 	// to reduce the chance of a cache hit. Cannot be greater than 31,
 	// because the prefix codes indicating padding start at 224.
@@ -41,6 +41,46 @@ const (
 
 // base32Encoding is a base32 encoding without padding.
 var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// compressARuns replaces runs of lowercase 'a' in base32-encoded data with
+// digits not used by base32 (0, 1, 8, 9) to shorten the encoded output.
+// 0=aa, 1=aaa, 8=aaaa, 9=aaaaa.
+func compressARuns(data []byte) []byte {
+	var result []byte
+	i := 0
+	for i < len(data) {
+		if data[i] == 'a' {
+			count := 0
+			for i < len(data) && data[i] == 'a' {
+				count++
+				i++
+			}
+			for count >= 5 {
+				result = append(result, '9')
+				count -= 5
+			}
+			if count >= 4 {
+				result = append(result, '8')
+				count -= 4
+			}
+			if count >= 3 {
+				result = append(result, '1')
+				count -= 3
+			}
+			if count >= 2 {
+				result = append(result, '0')
+				count -= 2
+			}
+			if count == 1 {
+				result = append(result, 'a')
+			}
+		} else {
+			result = append(result, data[i])
+			i++
+		}
+	}
+	return result
+}
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
@@ -306,6 +346,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
 	base32Encoding.Encode(encoded, decoded)
 	encoded = bytes.ToLower(encoded)
+	encoded = compressARuns(encoded)
 	labels := chunks(encoded, 63)
 	labels = append(labels, c.domain...)
 	name, err := dns.NewName(labels)

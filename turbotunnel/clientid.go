@@ -13,7 +13,7 @@ import (
 // client session. The client attaches its ClientID to each of its
 // communications, enabling the server to disambiguate requests among its many
 // clients. ClientID implements the net.Addr interface.
-type ClientID [8]byte
+type ClientID [4]byte
 
 func NewClientID() ClientID {
 	var id ClientID
