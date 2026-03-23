@@ -101,6 +101,27 @@ var (
 // base32Encoding is a base32 encoding without padding.
 var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
+// expandARuns reverses the compression of 'a' runs done by the client.
+// 0=aa, 1=aaa, 8=aaaa, 9=aaaaa.
+func expandARuns(data []byte) []byte {
+	var result []byte
+	for _, b := range data {
+		switch b {
+		case '0':
+			result = append(result, 'a', 'a')
+		case '1':
+			result = append(result, 'a', 'a', 'a')
+		case '8':
+			result = append(result, 'a', 'a', 'a', 'a')
+		case '9':
+			result = append(result, 'a', 'a', 'a', 'a', 'a')
+		default:
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
 // generateKeypair generates a private key and the corresponding public key. If
 // privkeyFilename and pubkeyFilename are respectively empty, it prints the
 // corresponding key to standard output; otherwise it saves the key to the given
@@ -451,7 +472,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	encoded := bytes.ToUpper(bytes.Join(prefix, nil))
+	encoded := bytes.ToUpper(expandARuns(bytes.Join(prefix, nil)))
 	payload := make([]byte, base32Encoding.DecodedLen(len(encoded)))
 	n, err := base32Encoding.Decode(payload, encoded)
 	if err != nil {
