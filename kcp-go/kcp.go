@@ -22,13 +22,13 @@ const (
 	IKCP_MTU_DEF     = 1400
 	IKCP_ACK_FAST    = 3
 	IKCP_INTERVAL    = 100
-	IKCP_OVERHEAD    = 24
+	IKCP_OVERHEAD    = 20
 	IKCP_DEADLINK    = 20
 	IKCP_THRESH_INIT = 2
 	IKCP_THRESH_MIN  = 2
 	IKCP_PROBE_INIT  = 7000   // 7 secs to probe window size
 	IKCP_PROBE_LIMIT = 120000 // up to 120 secs to probe window
-	IKCP_SN_OFFSET   = 12
+	IKCP_SN_OFFSET   = 8
 )
 
 // monotonic reference time point
@@ -121,7 +121,6 @@ func (seg *segment) encode(ptr []byte) []byte {
 	ptr = ikcp_encode8u(ptr, seg.cmd)
 	ptr = ikcp_encode8u(ptr, seg.frg)
 	ptr = ikcp_encode16u(ptr, seg.wnd)
-	ptr = ikcp_encode32u(ptr, seg.ts)
 	ptr = ikcp_encode32u(ptr, seg.sn)
 	ptr = ikcp_encode32u(ptr, seg.una)
 	ptr = ikcp_encode32u(ptr, uint32(len(seg.data)))
@@ -152,6 +151,8 @@ type KCP struct {
 
 	acklist []ackItem
 
+	snd_ts map[uint32]uint32 // sn → send timestamp for RTT calculation
+
 	buffer   []byte
 	reserved int
 	output   output_callback
@@ -159,7 +160,6 @@ type KCP struct {
 
 type ackItem struct {
 	sn uint32
-	ts uint32
 }
 
 // NewKCP create a new kcp state machine
@@ -182,6 +182,7 @@ func NewKCP(conv uint32, output output_callback) *KCP {
 	kcp.ts_flush = IKCP_INTERVAL
 	kcp.ssthresh = IKCP_THRESH_INIT
 	kcp.dead_link = IKCP_DEADLINK
+	kcp.snd_ts = make(map[uint32]uint32)
 	kcp.output = output
 	return kcp
 }
@@ -417,6 +418,7 @@ func (kcp *KCP) parse_ack(sn uint32) {
 			// have to shift the segments behind forward,
 			// which is an expensive operation for large window
 			seg.acked = 1
+			delete(kcp.snd_ts, sn)
 			kcp.delSegment(seg)
 			break
 		}
@@ -426,7 +428,7 @@ func (kcp *KCP) parse_ack(sn uint32) {
 	}
 }
 
-func (kcp *KCP) parse_fastack(sn, ts uint32) {
+func (kcp *KCP) parse_fastack(sn uint32) {
 	if _itimediff(sn, kcp.snd_una) < 0 || _itimediff(sn, kcp.snd_nxt) >= 0 {
 		return
 	}
@@ -435,7 +437,7 @@ func (kcp *KCP) parse_fastack(sn, ts uint32) {
 		seg := &kcp.snd_buf[k]
 		if _itimediff(sn, seg.sn) < 0 {
 			break
-		} else if sn != seg.sn && _itimediff(seg.ts, ts) <= 0 {
+		} else if sn != seg.sn {
 			seg.fastack++
 		}
 	}
@@ -446,6 +448,7 @@ func (kcp *KCP) parse_una(una uint32) int {
 	for k := range kcp.snd_buf {
 		seg := &kcp.snd_buf[k]
 		if _itimediff(una, seg.sn) > 0 {
+			delete(kcp.snd_ts, seg.sn)
 			kcp.delSegment(seg)
 			count++
 		} else {
@@ -459,8 +462,8 @@ func (kcp *KCP) parse_una(una uint32) int {
 }
 
 // ack append
-func (kcp *KCP) ack_push(sn, ts uint32) {
-	kcp.acklist = append(kcp.acklist, ackItem{sn, ts})
+func (kcp *KCP) ack_push(sn uint32) {
+	kcp.acklist = append(kcp.acklist, ackItem{sn})
 }
 
 // returns true if data has repeated
@@ -532,13 +535,11 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		return -1
 	}
 
-	var latest uint32 // the latest ack packet
-	var flag int
 	var inSegs uint64
 	var windowSlides bool
 
 	for {
-		var ts, sn, length, una, conv uint32
+		var sn, length, una, conv uint32
 		var wnd uint16
 		var cmd, frg uint8
 
@@ -554,7 +555,6 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		data = ikcp_decode8u(data, &cmd)
 		data = ikcp_decode8u(data, &frg)
 		data = ikcp_decode16u(data, &wnd)
-		data = ikcp_decode32u(data, &ts)
 		data = ikcp_decode32u(data, &sn)
 		data = ikcp_decode32u(data, &una)
 		data = ikcp_decode32u(data, &length)
@@ -577,21 +577,26 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		kcp.shrink_buf()
 
 		if cmd == IKCP_CMD_ACK {
+			// calculate RTT from local send timestamp map
+			if ts, ok := kcp.snd_ts[sn]; ok {
+				current := currentMs()
+				if _itimediff(current, ts) >= 0 {
+					kcp.update_ack(_itimediff(current, ts))
+				}
+				delete(kcp.snd_ts, sn)
+			}
 			kcp.parse_ack(sn)
-			kcp.parse_fastack(sn, ts)
-			flag |= 1
-			latest = ts
+			kcp.parse_fastack(sn)
 		} else if cmd == IKCP_CMD_PUSH {
 			repeat := true
 			if _itimediff(sn, kcp.rcv_nxt+kcp.rcv_wnd) < 0 {
-				kcp.ack_push(sn, ts)
+				kcp.ack_push(sn)
 				if _itimediff(sn, kcp.rcv_nxt) >= 0 {
 					var seg segment
 					seg.conv = conv
 					seg.cmd = cmd
 					seg.frg = frg
 					seg.wnd = wnd
-					seg.ts = ts
 					seg.sn = sn
 					seg.una = una
 					seg.data = data[:length] // delayed data copying
@@ -615,15 +620,6 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		data = data[length:]
 	}
 	atomic.AddUint64(&DefaultSnmp.InSegs, inSegs)
-
-	// update rtt with the latest ts
-	// ignore the FEC packet
-	if flag != 0 && regular {
-		current := currentMs()
-		if _itimediff(current, latest) >= 0 {
-			kcp.update_ack(_itimediff(current, latest))
-		}
-	}
 
 	// cwnd update when packet arrived
 	if kcp.nocwnd == 0 {
@@ -702,7 +698,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 		makeSpace(IKCP_OVERHEAD)
 		// filter jitters caused by bufferbloat
 		if _itimediff(ack.sn, kcp.rcv_nxt) >= 0 || len(kcp.acklist)-1 == i {
-			seg.sn, seg.ts = ack.sn, ack.ts
+			seg.sn = ack.sn
 			ptr = seg.encode(ptr)
 		}
 	}
@@ -831,6 +827,11 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 			segment.ts = current
 			segment.wnd = seg.wnd
 			segment.una = seg.una
+
+			// record send time for RTT calculation (only on first transmit)
+			if segment.xmit == 1 {
+				kcp.snd_ts[segment.sn] = current
+			}
 
 			need := IKCP_OVERHEAD + len(segment.data)
 			makeSpace(need)
@@ -1077,4 +1078,5 @@ func (kcp *KCP) ReleaseTX() {
 	}
 	kcp.snd_queue = nil
 	kcp.snd_buf = nil
+	kcp.snd_ts = make(map[uint32]uint32)
 }
