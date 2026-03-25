@@ -2,6 +2,7 @@ package kcp
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync/atomic"
 	"time"
 )
@@ -128,6 +129,37 @@ func (seg *segment) encode(ptr []byte) []byte {
 	return ptr
 }
 
+func cmdName(cmd uint8) string {
+	switch cmd {
+	case IKCP_CMD_PUSH:
+		return "PUSH"
+	case IKCP_CMD_ACK:
+		return "ACK"
+	case IKCP_CMD_WASK:
+		return "WASK"
+	case IKCP_CMD_WINS:
+		return "WINS"
+	default:
+		return fmt.Sprintf("UNK(%d)", cmd)
+	}
+}
+
+func (kcp *KCP) logSegment(dir string, cmd uint8, conv, sn, una uint32, frg uint8, wnd uint16, data []byte) {
+	if !kcp.Verbose {
+		return
+	}
+	fmt.Printf("[KCP %s] conv=%d cmd=%-4s sn=%-5d una=%-5d frg=%d wnd=%-5d len=%d",
+		dir, conv, cmdName(cmd), sn, una, frg, wnd, len(data))
+	if len(data) > 0 {
+		if len(data) <= 64 {
+			fmt.Printf(" data=%x", data)
+		} else {
+			fmt.Printf(" data=%x...(%d more)", data[:64], len(data)-64)
+		}
+	}
+	fmt.Println()
+}
+
 // KCP defines a single KCP connection
 type KCP struct {
 	conv, mtu, mss, state                  uint32
@@ -156,6 +188,8 @@ type KCP struct {
 	buffer   []byte
 	reserved int
 	output   output_callback
+
+	Verbose bool // when true, log all segment headers
 }
 
 type ackItem struct {
@@ -562,6 +596,8 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 			return -2
 		}
 
+		kcp.logSegment("recv", cmd, conv, sn, una, frg, wnd, data[:length])
+
 		if cmd != IKCP_CMD_PUSH && cmd != IKCP_CMD_ACK &&
 			cmd != IKCP_CMD_WASK && cmd != IKCP_CMD_WINS {
 			return -3
@@ -699,6 +735,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 		// filter jitters caused by bufferbloat
 		if _itimediff(ack.sn, kcp.rcv_nxt) >= 0 || len(kcp.acklist)-1 == i {
 			seg.sn = ack.sn
+			kcp.logSegment("send", seg.cmd, seg.conv, seg.sn, seg.una, seg.frg, seg.wnd, seg.data)
 			ptr = seg.encode(ptr)
 		}
 	}
@@ -737,6 +774,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 	if (kcp.probe & IKCP_ASK_SEND) != 0 {
 		seg.cmd = IKCP_CMD_WASK
 		makeSpace(IKCP_OVERHEAD)
+		kcp.logSegment("send", seg.cmd, seg.conv, seg.sn, seg.una, seg.frg, seg.wnd, seg.data)
 		ptr = seg.encode(ptr)
 	}
 
@@ -744,6 +782,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 	if (kcp.probe & IKCP_ASK_TELL) != 0 {
 		seg.cmd = IKCP_CMD_WINS
 		makeSpace(IKCP_OVERHEAD)
+		kcp.logSegment("send", seg.cmd, seg.conv, seg.sn, seg.una, seg.frg, seg.wnd, seg.data)
 		ptr = seg.encode(ptr)
 	}
 
@@ -835,6 +874,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 
 			need := IKCP_OVERHEAD + len(segment.data)
 			makeSpace(need)
+			kcp.logSegment("send", segment.cmd, segment.conv, segment.sn, segment.una, segment.frg, segment.wnd, segment.data)
 			ptr = segment.encode(ptr)
 			copy(ptr, segment.data)
 			ptr = ptr[len(segment.data):]

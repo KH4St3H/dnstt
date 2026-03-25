@@ -464,6 +464,13 @@ func (s *UDPSession) SetDUP(dup int) {
 	s.dup = dup
 }
 
+// SetVerbose enables or disables verbose logging of KCP segment headers.
+func (s *UDPSession) SetVerbose(verbose bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kcp.Verbose = verbose
+}
+
 // SetNoDelay calls nodelay() of kcp
 // https://github.com/skywind3000/kcp/blob/master/README.en.md#protocol-configuration
 func (s *UDPSession) SetNoDelay(nodelay, interval, resend, nc int) {
