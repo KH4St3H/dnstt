@@ -23,13 +23,14 @@ const (
 	IKCP_MTU_DEF     = 1400
 	IKCP_ACK_FAST    = 3
 	IKCP_INTERVAL    = 100
-	IKCP_OVERHEAD    = 20
+	IKCP_OVERHEAD    = 16
 	IKCP_DEADLINK    = 20
 	IKCP_THRESH_INIT = 2
 	IKCP_THRESH_MIN  = 2
 	IKCP_PROBE_INIT  = 7000   // 7 secs to probe window size
 	IKCP_PROBE_LIMIT = 120000 // up to 120 secs to probe window
 	IKCP_SN_OFFSET   = 8
+	IKCP_SN_MASK     = 0xFFFF // sequence numbers are 16-bit
 )
 
 // monotonic reference time point
@@ -122,8 +123,8 @@ func (seg *segment) encode(ptr []byte) []byte {
 	ptr = ikcp_encode8u(ptr, seg.cmd)
 	ptr = ikcp_encode8u(ptr, seg.frg)
 	ptr = ikcp_encode16u(ptr, seg.wnd)
-	ptr = ikcp_encode32u(ptr, seg.sn)
-	ptr = ikcp_encode32u(ptr, seg.una)
+	ptr = ikcp_encode16u(ptr, uint16(seg.sn))
+	ptr = ikcp_encode16u(ptr, uint16(seg.una))
 	ptr = ikcp_encode32u(ptr, uint32(len(seg.data)))
 	atomic.AddUint64(&DefaultSnmp.OutSegs, 1)
 	return ptr
@@ -317,7 +318,7 @@ func (kcp *KCP) Recv(buffer []byte) (n int) {
 	for k := range kcp.rcv_buf {
 		seg := &kcp.rcv_buf[k]
 		if seg.sn == kcp.rcv_nxt && len(kcp.rcv_queue)+count < int(kcp.rcv_wnd) {
-			kcp.rcv_nxt++
+			kcp.rcv_nxt = (kcp.rcv_nxt + 1) & IKCP_SN_MASK
 			count++
 		} else {
 			break
@@ -543,7 +544,7 @@ func (kcp *KCP) parse_data(newseg segment) bool {
 	for k := range kcp.rcv_buf {
 		seg := &kcp.rcv_buf[k]
 		if seg.sn == kcp.rcv_nxt && len(kcp.rcv_queue)+count < int(kcp.rcv_wnd) {
-			kcp.rcv_nxt++
+			kcp.rcv_nxt = (kcp.rcv_nxt + 1) & IKCP_SN_MASK
 			count++
 		} else {
 			break
@@ -573,8 +574,8 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 	var windowSlides bool
 
 	for {
-		var sn, length, una, conv uint32
-		var wnd uint16
+		var length, conv uint32
+		var sn, una, wnd uint16
 		var cmd, frg uint8
 
 		if len(data) < int(IKCP_OVERHEAD) {
@@ -589,14 +590,16 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		data = ikcp_decode8u(data, &cmd)
 		data = ikcp_decode8u(data, &frg)
 		data = ikcp_decode16u(data, &wnd)
-		data = ikcp_decode32u(data, &sn)
-		data = ikcp_decode32u(data, &una)
+		data = ikcp_decode16u(data, &sn)
+		data = ikcp_decode16u(data, &una)
 		data = ikcp_decode32u(data, &length)
+		sn32 := uint32(sn)
+		una32 := uint32(una)
 		if len(data) < int(length) {
 			return -2
 		}
 
-		kcp.logSegment("recv", cmd, conv, sn, una, frg, wnd, data[:length])
+		kcp.logSegment("recv", cmd, conv, uint32(sn), uint32(una), frg, wnd, data[:length])
 
 		if cmd != IKCP_CMD_PUSH && cmd != IKCP_CMD_ACK &&
 			cmd != IKCP_CMD_WASK && cmd != IKCP_CMD_WINS {
@@ -607,34 +610,34 @@ func (kcp *KCP) Input(data []byte, regular, ackNoDelay bool) int {
 		if regular {
 			kcp.rmt_wnd = uint32(wnd)
 		}
-		if kcp.parse_una(una) > 0 {
+		if kcp.parse_una(una32) > 0 {
 			windowSlides = true
 		}
 		kcp.shrink_buf()
 
 		if cmd == IKCP_CMD_ACK {
 			// calculate RTT from local send timestamp map
-			if ts, ok := kcp.snd_ts[sn]; ok {
+			if ts, ok := kcp.snd_ts[sn32]; ok {
 				current := currentMs()
 				if _itimediff(current, ts) >= 0 {
 					kcp.update_ack(_itimediff(current, ts))
 				}
-				delete(kcp.snd_ts, sn)
+				delete(kcp.snd_ts, sn32)
 			}
-			kcp.parse_ack(sn)
-			kcp.parse_fastack(sn)
+			kcp.parse_ack(sn32)
+			kcp.parse_fastack(sn32)
 		} else if cmd == IKCP_CMD_PUSH {
 			repeat := true
-			if _itimediff(sn, kcp.rcv_nxt+kcp.rcv_wnd) < 0 {
-				kcp.ack_push(sn)
-				if _itimediff(sn, kcp.rcv_nxt) >= 0 {
+			if _itimediff(sn32, kcp.rcv_nxt+kcp.rcv_wnd) < 0 {
+				kcp.ack_push(sn32)
+				if _itimediff(sn32, kcp.rcv_nxt) >= 0 {
 					var seg segment
 					seg.conv = conv
 					seg.cmd = cmd
 					seg.frg = frg
 					seg.wnd = wnd
-					seg.sn = sn
-					seg.una = una
+					seg.sn = sn32
+					seg.una = una32
 					seg.data = data[:length] // delayed data copying
 					repeat = kcp.parse_data(seg)
 				}
@@ -805,7 +808,7 @@ func (kcp *KCP) flush(ackOnly bool) uint32 {
 		newseg.cmd = IKCP_CMD_PUSH
 		newseg.sn = kcp.snd_nxt
 		kcp.snd_buf = append(kcp.snd_buf, newseg)
-		kcp.snd_nxt++
+		kcp.snd_nxt = (kcp.snd_nxt + 1) & IKCP_SN_MASK
 		newSegsCount++
 	}
 	if newSegsCount > 0 {
@@ -1027,7 +1030,7 @@ func (kcp *KCP) Check() uint32 {
 
 // SetMtu changes MTU size, default is 1400
 func (kcp *KCP) SetMtu(mtu int) int {
-	if mtu < 50 || mtu < IKCP_OVERHEAD {
+	if mtu < 30 || mtu < IKCP_OVERHEAD {
 		return -1
 	}
 	if kcp.reserved >= int(kcp.mtu-IKCP_OVERHEAD) || kcp.reserved < 0 {
