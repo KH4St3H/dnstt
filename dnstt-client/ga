@@ -1,0 +1,26 @@
+#
+# demo config
+#
+
+global
+  maxconn         20000
+  log             127.0.0.1 local0
+  daemon
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    timeout connect 5s
+    timeout client  300s
+    timeout server  300s
+
+frontend ft_http
+    bind *:8080
+    mode tcp
+
+    use_backend bk_px
+
+backend bk_px
+    mode tcp
+    server px 87.247.189.186:80

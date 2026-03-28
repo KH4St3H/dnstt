@@ -174,7 +174,7 @@ func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, mtu int, 
 
 	// Open a KCP conn on the PacketConn.
 	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
-	conn.SetVerbose(true)
+	// conn.SetVerbose(true)
 	if err != nil {
 		return fmt.Errorf("opening KCP conn: %v", err)
 	}
