@@ -11,6 +11,8 @@ require (
 	golang.org/x/net v0.23.0
 )
 
+replace github.com/xtaci/kcp-go/v5 => ./kcp-go
+
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.3.7 // indirect

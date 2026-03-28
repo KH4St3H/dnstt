@@ -168,12 +168,13 @@ func run(domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, mtu int, 
 		return fmt.Errorf("provided mtu value \"%d\" is higher than the capacity of you domain \"%d\"", mtu, mtuCap)
 	}
 
-	if mtu < 50 {
-		return fmt.Errorf("minimum allowed mtu is 50")
+	if mtu < 30 {
+		return fmt.Errorf("minimum allowed mtu is 30")
 	}
 
 	// Open a KCP conn on the PacketConn.
 	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
+	conn.SetVerbose(true)
 	if err != nil {
 		return fmt.Errorf("opening KCP conn: %v", err)
 	}
