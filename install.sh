@@ -187,8 +187,6 @@ EOF
 # ─── Binary download ─────────────────────────────────────────────────────────
 
 download_binary() {
-    local bin_os bin_arch asset_name api_url download_url tmp
-
     bin_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
     bin_arch="$(uname -m)"
     case "$bin_arch" in
